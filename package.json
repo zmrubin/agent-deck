@@ -1,0 +1,14 @@
+{
+  "name": "agent-deck",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A stream-deck view of your AI coding agents: blink when one needs you, say what it needs on the touch strip.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test 'tests/*.test.mjs'",
+    "standalone": "node plugin/com.zacharyrubin.agentdeck.sdPlugin/src/main.mjs",
+    "dev-install": "sh scripts/dev-install.sh",
+    "simulate": "sh scripts/simulate.sh"
+  }
+}

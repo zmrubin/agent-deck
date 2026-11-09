@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
+    ]
+  }
+}

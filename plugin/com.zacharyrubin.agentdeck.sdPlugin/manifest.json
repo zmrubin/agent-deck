@@ -1,0 +1,46 @@
+{
+  "Name": "Agent Deck",
+  "Version": "0.1.0",
+  "Author": "Zachary Rubin",
+  "Description": "Shows your AI coding agents on the deck. Keys blink when an agent needs a decision; the touch strip says what it needs.",
+  "Icon": "imgs/plugin",
+  "Category": "Agent Deck",
+  "CategoryIcon": "imgs/plugin",
+  "CodePathMac": "bin/launch.sh",
+  "CodePathLin": "bin/launch.sh",
+  "SDKVersion": 2,
+  "OS": [
+    { "Platform": "mac", "MinimumVersion": "11" },
+    { "Platform": "linux" }
+  ],
+  "Software": { "MinimumVersion": "6.4" },
+  "Actions": [
+    {
+      "UUID": "com.zacharyrubin.agentdeck.slot",
+      "Name": "Agent slot",
+      "Icon": "imgs/slot",
+      "Tooltip": "Shows one running agent. Slots fill in key order. Press to jump to that agent's app.",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "States": [{ "Image": "imgs/slot", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.zacharyrubin.agentdeck.strip",
+      "Name": "Agent status strip",
+      "Icon": "imgs/strip",
+      "Tooltip": "Put one on each knob. Together they show what the featured agent needs.",
+      "Controllers": ["Encoder"],
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "Icon": "imgs/strip",
+        "layout": "layouts/strip.json",
+        "TriggerDescription": {
+          "Rotate": "Cycle featured agent",
+          "Push": "Jump to featured agent",
+          "Touch": "Jump to featured agent"
+        }
+      },
+      "States": [{ "Image": "imgs/strip", "ShowTitle": false }]
+    }
+  ]
+}
