@@ -19,7 +19,7 @@
       "UUID": "com.zacharyrubin.agentdeck.slot",
       "Name": "Agent slot",
       "Icon": "imgs/slot",
-      "Tooltip": "Shows one running agent. Slots fill in key order. Press to jump to that agent's app.",
+      "Tooltip": "Shows one running agent, or a recently used app when no agent needs the key. Press to jump to it.",
       "Controllers": ["Keypad"],
       "SupportedInMultiActions": false,
       "States": [{ "Image": "imgs/slot", "ShowTitle": false }]
@@ -35,9 +35,9 @@
         "Icon": "imgs/strip",
         "layout": "layouts/strip.json",
         "TriggerDescription": {
-          "Rotate": "Cycle featured agent",
-          "Push": "Jump to featured agent",
-          "Touch": "Jump to featured agent"
+          "Rotate": "Cycle featured agent (1st knob picks a tab when the strip lists tabs; 3rd scrolls; 4th moves between fields)",
+          "Push": "Answer the permission shown above this knob; otherwise jump to what the strip shows (1st knob opens the picked tab; 3rd dictates; 4th clicks)",
+          "Touch": "Answer the permission shown above this spot, or jump to featured agent"
         }
       },
       "States": [{ "Image": "imgs/strip", "ShowTitle": false }]

@@ -23,11 +23,82 @@ Claude Code ──hook──▶ hooks/agent-deck-hook.sh ──HTTP──▶ plu
 | Amber **NEEDS YOU**, blinking | Agent is waiting on a permission/decision |
 | Green **DONE** | Finished its turn — your move |
 | Slate **READY** | Session started, nothing asked yet |
+| Dark, app icon + name | A running app (no agent needs this key); press to bring it to the front |
 | Dark number | Empty slot |
 
-Slots fill in the order sessions start, so keys don't shuffle. The touch strip
-features the most urgent agent (waiting first); turn any knob to cycle through
-agents, push a knob or tap the strip to jump to the featured one.
+Agents always get keys first, in the order sessions start. Keys no agent
+needs show your most recently used apps that have a window open (apps with a
+Dock icon; Finder, OpenDeck and any app an agent is running in are left out).
+Every key keeps what it shows for as long as that stays on the deck, so keys
+don't shuffle:
+
+- A new agent takes an empty key, or else the key of the least recently used app.
+- When an agent ends, its key goes to the most recently used app that isn't on the deck.
+- Quit an app, or close its last window, and its key goes to the next most
+  recent app with a window (or stays empty until one opens). Hidden, minimized
+  and other-Space windows still count as open.
+- Switching between apps already on the deck moves nothing. An app that comes
+  to the front while off the deck replaces the least recently used app, in place.
+
+The app list follows launches, quits and app switches as they happen
+(`lsappinfo listen`, no extra permissions). Closing a window raises no event,
+so a tiny Swift helper (`src/windows.swift`, compiled on first run into
+`~/Library/Caches/agent-deck/`; needs the Xcode command line tools) checks the
+window list once a second, using well under 1% of a core. Without the
+command line tools, apps with no windows simply stay on the deck. The touch strip
+features the most urgent agent (waiting first); turn one of the first two
+knobs to cycle through agents; push one of the first two or tap the strip to
+jump to the featured one.
+
+**Press an app key and the strip shows that app** until you press an agent key
+or turn a knob to go back to the agents (a permission question always takes
+the strip). It's re-read every 3 seconds while it's showing:
+
+| App | Strip shows |
+|---|---|
+| Messages | Recent conversations with the last message and time, unread marked; while you search, the open chat's latest messages |
+| WhatsApp | Recent chats with the last message, unread counts and the total unread |
+| Notes | Recent notes with their dates |
+| Chrome, Safari, Terminal, Finder… (any tab bar) | **Tab picker**: every open tab, six at a time, starting on the current one (blue bar). Turn knob 1 to move the highlight, push knob 1 to switch to that tab and bring the app forward |
+| Anything else | Its window titles, the front one marked |
+
+It's read through Accessibility (`src/context.swift`, the same permission the
+knobs use), from the app's own window, so it only sees what that app has on
+screen on the current desktop. Pushing knob 1 or 2 while an app is showing
+jumps to that app (knob 1 on the tab picker switches to the highlighted tab). `GET /context` shows what was read.
+
+The two rightmost knobs control the computer:
+
+- **Third knob, turn** to scroll, like a mouse wheel, wherever the pointer is
+  (down turning right).
+- **Third knob, push** to start dictation in Snaply, push again to
+  stop. It presses Snaply's own dictation shortcut (read from
+  `~/.snaply/settings.json` each time). With Snaply set to *hold* (push-to-talk)
+  the knob holds the key down until the next push (let go after five minutes
+  regardless), so typing in between carries that modifier; with
+  *toggle* or *combined* it just taps the key. If Snaply isn't running, the
+  push opens it.
+- **Fourth (rightmost) knob, turn** to move between fields in the app in front
+  (Tab, or Shift-Tab turning left).
+- **Fourth knob, push** to click whatever is highlighted: a focused button,
+  link, checkbox or menu is pressed through Accessibility (the pointer doesn't
+  move); with nothing pressable focused (a text box, a page) it's an ordinary
+  click where the pointer is, without any key the dictation knob is holding.
+- While an agent's permission question is on the strip, all four knobs answer
+  it (the rightmost is **In terminal**).
+
+Sending keys needs the Accessibility permission for **OpenDeck** (it launches
+the plugin): macOS asks the first time you use the knob, or add it under System
+Settings → Privacy & Security → Accessibility, then restart OpenDeck.
+
+The deck goes dark while your Mac's displays sleep, so its screens aren't lit
+all night, and lights up with the current state when they wake. A second
+helper (`src/displays.swift`) reports display sleep and wake, and the plugin
+asks OpenDeck to switch the deck (`opendeck --sleep-device` /
+`--wake-device`, the same calls OpenDeck's own idle sleep uses). The S10's
+sleep only dims its screens, so every key and the strip are drawn black just
+before. Pressing a deck key while it's dark lights it up; if the displays are
+still asleep it goes dark again within five minutes.
 
 ## Setup (macOS)
 
@@ -58,7 +129,7 @@ sh scripts/simulate.sh clear
 ```
 
 Live preview of what the deck should show: <http://127.0.0.1:47821/preview>
-(state as JSON: `/agents`).
+(state as JSON: `/agents`; running apps and what each key shows: `/apps`).
 
 ### Connect Claude Code
 
@@ -84,7 +155,16 @@ curl -X POST http://127.0.0.1:47821/event -H 'Content-Type: application/json' \
 | `plugin/com.zacharyrubin.agentdeck.sdPlugin/` | The OpenDeck plugin (manifest, launcher, source, icons, strip layout) |
 | `hooks/` | Claude Code hook script + example settings |
 | `scripts/` | `dev-install.sh`, `simulate.sh` |
-| `tests/` | `node --test` unit tests for state + rendering |
+| `plugin/…/src/slots.mjs` | Which agent or app each key shows (agents first, sticky keys) |
+| `plugin/…/src/apps.mjs` | Running-app discovery (`lsappinfo`), recency, icons, exclusions, window state |
+| `plugin/…/src/windows.swift` | Window helper: reports which apps have windows open |
+| `plugin/…/src/power.mjs` | Turns the deck off while the displays sleep, on when they wake |
+| `plugin/…/src/displays.swift` | Display helper: reports display sleep and wake |
+| `plugin/…/src/context.mjs` | What the strip says about the last app key pressed (`context.swift` reads it) |
+| `plugin/…/src/controls.mjs` | What each knob does; third knob: scroll and dictation (Snaply); fourth knob: Tab between fields and click |
+| `plugin/…/src/keys.swift` | Key helper: posts keystrokes for the right knob |
+| `plugin/…/src/helpers.mjs` | Compiling the Swift helpers, keeping long-running helpers alive |
+| `tests/` | `node --test` unit tests for state, slot allocation, app discovery, deck power, knob controls + rendering |
 | `docs/s10-hardware.md` | What we learned about the S10's USB protocol |
 | `tools/s10-probe/` | Python scripts that talk to the S10 directly (bypassing OpenDeck) |
 
@@ -94,4 +174,4 @@ curl -X POST http://127.0.0.1:47821/event -H 'Content-Type: application/json' \
 - OpenDeck renders the strip as four 200×100 panels; the patched device plugin stitches and stretches them to the S10's 800×128, so the strip is effectively 100 rows of resolution. Each update currently sends the full strip once per panel (4 writes); batching would cut that to one.
 - Blinking costs one image per frame through OpenDeck's renderer; fine at ~1.6 Hz, untested faster.
 - State is in memory: restarting OpenDeck forgets agents until their next event.
-- Answering an agent from the deck (approve/deny) isn't attempted yet.
+- Answering permission requests from the deck (the `PermissionRequest` hook, `hooks/agent-deck-permission.sh`): the strip shows the tool and command with **Allow · Always allow · Deny · In terminal** above the four knobs; push a knob or tap that quarter of the strip. Verified with headless `claude -p`; not yet known whether Claude's own terminal prompt also shows while the deck holds the request.

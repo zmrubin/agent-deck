@@ -5,6 +5,7 @@
 
 PORT="${AGENT_DECK_PORT:-47821}"
 TTY="$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')"
+[ "$TTY" = "??" ] && TTY=""   # no controlling terminal
 
 curl -s -m 1 -o /dev/null -X POST "http://127.0.0.1:$PORT/event" \
   -H 'Content-Type: application/json' \

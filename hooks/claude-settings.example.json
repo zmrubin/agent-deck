@@ -12,6 +12,9 @@
     "PostToolUse": [
       { "matcher": "*", "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
     ],
+    "PermissionRequest": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-permission.sh", "timeout": 600 }] }
+    ],
     "Notification": [
       { "hooks": [{ "type": "command", "command": "/Users/zamaru/Development/agent-deck/hooks/agent-deck-hook.sh", "timeout": 3 }] }
     ],

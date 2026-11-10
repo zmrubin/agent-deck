@@ -52,11 +52,18 @@ export function interpret(evt) {
       return { state: "working", keepMessage: true };
     case "PreCompact":
       return { state: "working", message: "Compacting context" };
-    case "Notification":
-      // Claude Code sends this both for permission prompts and for
-      // "waiting for your input" reminders after it has been idle.
-      if (IDLE_PROMPT.test(evt.message || "")) return { state: "done", message: evt.message };
-      return { state: "waiting", message: evt.message || "Needs your attention" };
+    case "Notification": {
+      // notification_type: permission_prompt, idle_prompt, agent_needs_input, …
+      // (older builds have no type; fall back to the message text).
+      const type = evt.notification_type;
+      if (type === "idle_prompt" || (!type && IDLE_PROMPT.test(evt.message || ""))) {
+        return { state: "done", message: evt.message };
+      }
+      if (type && !["permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog"].includes(type)) {
+        return null; // auth, quota, plugin notices: not a state change
+      }
+      return { state: "waiting", message: evt.message || "Needs your attention", keepRequest: true };
+    }
     case "Stop":
       return { state: "done", message: "Finished — your turn" };
     case "SessionEnd":
@@ -96,10 +103,28 @@ export class AgentStore {
       a.state = r.state;
       a.stateSince = t;
     }
-    if (!r.keepMessage) a.message = r.message ?? "";
+    if (!r.keepMessage && !(r.keepRequest && a.request)) a.message = r.message ?? "";
     a.updated = t;
 
     return JSON.stringify(a) !== before;
+  }
+
+  /** Attach (or clear, with null) a pending permission request shown on the strip. */
+  setRequest(id, request) {
+    const a = this.agents.get(id);
+    if (!a) return false;
+    if (request) {
+      a.request = request;
+      a.message = `${request.tool}: ${request.detail}`;
+      if (a.state !== "waiting") {
+        a.state = "waiting";
+        a.stateSince = this.now();
+      }
+    } else {
+      delete a.request;
+    }
+    a.updated = this.now();
+    return true;
   }
 
   /** Agents in slot order: oldest session first, so keys don't shuffle. */
