@@ -2,15 +2,19 @@
 //
 //   context <pid>                        print a snapshot (below)
 //   context <pid> press <win> <tab> [title]   switch to a tab (see "press" below)
+//   context <pid> select <list> <row> [title] open a list row (see "select" below)
 //
 // Prints one JSON snapshot of what an app shows, read through Accessibility
 // (the permission belongs to OpenDeck, which launches the plugin):
 //   { "windows": [ { "title", "main", "tabs": [ { "title", "selected" } ] } ],
-//     "lists":   [ { "role", "id", "desc", "rows": [ { "desc", "value", "id", "selected", "texts": [] } ] } ] }
+//     "lists":   [ { "index", "window", "role", "id", "desc", "rows": [ { "index", "desc", "value", "id", "selected", "texts": [] } ] } ] }
+// A list's and a row's "index" are what `select` takes.
 // Windows are the app's standard windows, main window first; tabs come from
 // each window's tab bar (browsers, Terminal, Finder…). Lists are the tables,
-// outlines and list-like groups in the main window (Messages' conversations,
-// WhatsApp's chats, Notes' notes…); context.mjs decides what's worth showing.
+// outlines and list-like groups in the first three windows, main window first
+// (Messages' conversations, WhatsApp's chats, Notes' notes…; a chat Messages
+// opened in its own window has no conversation list, so the main window may
+// not hold it); context.mjs decides what's worth showing.
 // Web page content is never walked: it's slow and the tab titles say enough.
 
 import ApplicationServices
@@ -138,6 +142,85 @@ if CommandLine.arguments.count > 4, CommandLine.arguments[2] == "press" {
   exit(0)
 }
 
+/// The tables, outlines and list-like groups in a window, in the order "lists" indexes them.
+func findLists(_ front: AXUIElement) -> [AXUIElement] {
+  let listy = ["List", "TableView", "CollectionView"]
+  return find(front, maxDepth: 30, limit: 8, budget: 3000) { e, role in
+    if ["AXTable", "AXOutline", "AXList"].contains(role) { return true }
+    let id = str(e, "AXIdentifier")
+    return role == "AXGroup" && listy.contains { id.contains($0) } && !children(e).isEmpty
+  }
+}
+
+/// The lists of the first three windows (main window first), at most 8 in all,
+/// with the window each is in: the order "lists" indexes them.
+func allLists() -> [(window: Int, list: AXUIElement)] {
+  var out: [(window: Int, list: AXUIElement)] = []
+  for (wi, w) in ordered.prefix(3).enumerated() where out.count < 8 {
+    out += findLists(w).prefix(8 - out.count).map { (window: wi, list: $0) }
+  }
+  return out
+}
+
+/// Text without the direction marks Messages and WhatsApp wrap names in, spaces collapsed.
+func plain(_ s: String) -> String {
+  let marks: [ClosedRange<UInt32>] = [0x200E...0x200F, 0x202A...0x202E, 0x2066...0x2069]
+  let kept = String(String.UnicodeScalarView(s.unicodeScalars.filter { u in !marks.contains { $0.contains(u.value) } }))
+  return kept.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
+
+func actionNames(_ e: AXUIElement) -> [String] {
+  var names: CFArray?
+  return AXUIElementCopyActionNames(e, &names) == .success ? (names as? [String]) ?? [] : []
+}
+
+/// Open a list row the way a click would: press it (Messages, WhatsApp), else
+/// select it (Notes' table rows), else press its first pressable child. A row
+/// that's already selected is left alone: pressing the open conversation again
+/// makes Messages open it in a window of its own.
+func openRow(_ row: AXUIElement) -> String? {
+  let press = kAXPressAction as String
+  if (attr(row, "AXSelected") as? Bool) == true { return "already open" }
+  AXUIElementPerformAction(row, "AXScrollToVisible" as CFString)
+  if actionNames(row).contains(press), AXUIElementPerformAction(row, press as CFString) == .success { return "press" }
+  var settable = DarwinBoolean(false)
+  if AXUIElementIsAttributeSettable(row, "AXSelected" as CFString, &settable) == .success, settable.boolValue,
+     AXUIElementSetAttributeValue(row, "AXSelected" as CFString, kCFBooleanTrue) == .success { return "select" }
+  for c in children(row) where actionNames(c).contains(press) {
+    if AXUIElementPerformAction(c, press as CFString) == .success { return "press child" }
+  }
+  return nil
+}
+
+// context <pid> select <list> <row> [title]: open that row of that list
+// (indexes as in the snapshot) and raise its window. `title` (as listed)
+// guards against the rows having moved since they were read: if that row
+// doesn't contain it, the first row in the list that does is used. Prints
+// {"pressed": bool, "how"}.
+if CommandLine.arguments.count > 4, CommandLine.arguments[2] == "select" {
+  let args = CommandLine.arguments
+  let li = Int(args[3]) ?? 0, ri = Int(args[4]) ?? 0, want = plain(args.count > 5 ? args[5] : "")
+  func has(_ r: AXUIElement) -> Bool {
+    want.isEmpty || plain(([str(r, "AXDescription"), str(r, "AXValue")] + texts(r)).joined(separator: " ")).contains(want)
+  }
+  var out: [String: Any] = ["pressed": false]
+  let lists = allLists()
+  if li < lists.count {
+    let rows = children(lists[li].list)
+    if let row = (ri < rows.count && has(rows[ri])) ? rows[ri] : rows.first(where: has) {
+      let how = openRow(row)
+      out["pressed"] = how != nil
+      out["how"] = how ?? ""
+      let window = ordered[lists[li].window]
+      AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+      AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+    }
+  }
+  FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: out, options: []))
+  FileHandle.standardOutput.write("\n".data(using: .utf8)!)
+  exit(0)
+}
+
 var outWindows: [[String: Any]] = []
 for (i, w) in ordered.enumerated() {
   let tabs = tabButtons(w).map { ["title": clip(tabTitle($0)), "selected": str($0, "AXValue") == "1"] as [String: Any] }
@@ -145,28 +228,24 @@ for (i, w) in ordered.enumerated() {
 }
 
 var outLists: [[String: Any]] = []
-if let front = ordered.first {
-  let listy = ["List", "TableView", "CollectionView"]
-  let lists = find(front, maxDepth: 30, limit: 8, budget: 3000) { e, role in
-    if ["AXTable", "AXOutline", "AXList"].contains(role) { return true }
-    let id = str(e, "AXIdentifier")
-    return role == "AXGroup" && listy.contains { id.contains($0) } && !children(e).isEmpty
-  }
-  for l in lists {
+do {
+  for (li, (wi, l)) in allLists().enumerated() {
     var rows: [[String: Any]] = []
     // Conversation lists are newest first, chat transcripts newest last: keep both ends.
     let all = children(l)
-    for r in all.count <= 60 ? all : Array(all.prefix(30) + all.suffix(30)) {
+    let keep = all.count <= 60 ? Array(all.indices) : Array(all.indices.prefix(30)) + Array(all.indices.suffix(30))
+    for ri in keep {
+      let r = all[ri]
       let role = str(r, "AXRole")
       if role == "AXColumn" || role == "AXScrollBar" { continue }
       rows.append([
-        "desc": clip(str(r, "AXDescription")), "value": clip(str(r, "AXValue")),
+        "index": ri, "desc": clip(str(r, "AXDescription")), "value": clip(str(r, "AXValue")),
         "id": str(r, "AXIdentifier"), "selected": (attr(r, "AXSelected") as? Bool) ?? false,
         "texts": texts(r),
       ])
     }
     if !rows.isEmpty {
-      outLists.append(["role": str(l, "AXRole"), "id": str(l, "AXIdentifier"), "desc": str(l, "AXDescription"), "rows": rows])
+      outLists.append(["index": li, "window": wi, "role": str(l, "AXRole"), "id": str(l, "AXIdentifier"), "desc": str(l, "AXDescription"), "rows": rows])
     }
   }
 }

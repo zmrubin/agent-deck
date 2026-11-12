@@ -136,6 +136,14 @@ export function appsForDeck(apps, agents = []) {
   );
 }
 
+/** The running app an agent runs in (by bundle id, else its terminal's name), or null: its key shows that app's icon. */
+export function hostApp(apps, agent) {
+  if (!agent) return null;
+  if (agent.bundleId) return apps.find((a) => a.bundleId === agent.bundleId) || null;
+  const name = TERM_APPS[agent.termProgram];
+  return (name && apps.find((a) => a.name === name)) || null;
+}
+
 /** `open` arguments that bring an app to the front (unhiding it), like clicking it in the Dock. */
 export function openArgs(app) {
   if (app.bundlePath) return ["-a", app.bundlePath];

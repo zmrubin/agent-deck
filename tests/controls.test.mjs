@@ -80,8 +80,8 @@ test("unreadable Snaply settings are logged, no keys sent", () => {
   assert.ok(logs.some((l) => l.includes("couldn't read Snaply's dictation shortcut")));
 });
 
-test("knob pushes: third dictates, fourth clicks, the rest jump to the agent", () => {
-  assert.deepEqual([0, 1, 2, 3].map((col) => knobPush(col)), ["jump", "jump", "dictate", "click"]);
+test("knob pushes: first runs the launcher, third dictates, fourth clicks, second jumps to the agent", () => {
+  assert.deepEqual([0, 1, 2, 3].map((col) => knobPush(col)), ["launch", "jump", "dictate", "click"]);
 });
 
 test("a permission question on the strip takes every knob push and tap", () => {
@@ -99,10 +99,113 @@ test("knob turns: first two cycle agents, third scrolls, fourth tabs between fie
   assert.deepEqual([0, 1, 2, 3].map((col) => knobTurn(col)), ["agents", "agents", "scroll", "fields"]);
 });
 
-test("with tabs on the strip the first knob picks one: turn to move, push to open", () => {
-  assert.deepEqual([0, 1, 2, 3].map((col) => knobTurn(col, { tabs: true })), ["pick-tab", "agents", "scroll", "fields"]);
-  assert.deepEqual([0, 1, 2, 3].map((col) => knobPush(col, { tabs: true })), ["open-tab", "jump", "dictate", "click"]);
-  assert.equal(knobPush(0, { tabs: true, pending: true }), "choose", "a permission question still wins");
+test("an app on the strip stays there: the first two knobs don't switch back to the agents", () => {
+  assert.deepEqual([0, 1, 2, 3].map((col) => knobTurn(col, { app: true })), ["none", "none", "scroll", "fields"]);
+  assert.deepEqual([0, 1, 2, 3].map((col) => knobTurn(col, { app: true, list: true })), ["none", "pick", "scroll", "fields"]);
+});
+
+test("with a list on the strip (tabs, conversations…) the second knob picks one: turn to move, push to open", () => {
+  assert.deepEqual([0, 1, 2, 3].map((col) => knobTurn(col, { list: true })), ["agents", "pick", "scroll", "fields"]);
+  assert.deepEqual([0, 1, 2, 3].map((col) => knobPush(col, { list: true })), ["launch", "open", "dictate", "click"]);
+  assert.equal(knobPush(1, { list: true, pending: true }), "choose", "a permission question still wins");
+});
+
+test("while the launcher is open, turning the first knob moves through its results", () => {
+  assert.deepEqual([0, 1, 2, 3].map((col) => knobTurn(col, { launcher: true, list: true, app: true })), ["launcher", "pick", "scroll", "fields"]);
+});
+
+/** Controls with a fake key helper that answers launcher commands like keys.swift. */
+function launcherFake({ open = "launcher open", mode = "hold", gone = false } = {}) {
+  const steps = [];
+  const f = fake({ readSettings: () => settings(mode), onChange: (s) => steps.push(s) });
+  f.c.helper = {
+    write(l) {
+      f.sent.push(l);
+      const reply = l === "launcher-open" ? open
+        : gone && l.startsWith("launcher-") ? "launcher gone"
+        : l.startsWith("launcher-move") ? "launcher moved"
+        : l === "launcher-return" ? "launcher opened" : null;
+      if (reply) setTimeout(() => f.c.onLine(reply), 0);
+      return true;
+    },
+    stop() {},
+  };
+  return { ...f, steps };
+}
+
+test("launcher: open Spotlight and talk, stop talking, turn through results, open the pick", async () => {
+  const { c, sent, steps } = launcherFake();
+  c.launcherPush();
+  await tick(5);
+  assert.deepEqual(sent, ["launcher-open", "down 59"], "Spotlight first, then dictation (held: hold mode)");
+  assert.equal(c.launcher, "listening");
+  await c.launcherTurn(2);
+  c.launcherPush(); // done talking
+  assert.deepEqual(sent.slice(2), ["launcher-move 2", "up 59"]);
+  assert.equal(c.launcher, "choosing");
+  await c.launcherTurn(-1);
+  c.launcherPush(); // open it
+  await tick(5);
+  assert.deepEqual(sent.slice(4), ["launcher-move -1", "launcher-return"]);
+  assert.equal(c.launcher, "idle");
+  assert.deepEqual(steps, ["opening", "listening", "choosing", "idle"]);
+  c.stop();
+});
+
+test("launcher with Snaply in toggle mode: a tap starts dictation and a tap stops it", async () => {
+  const { c, sent } = launcherFake({ mode: "toggle" });
+  c.launcherPush();
+  await tick(5);
+  c.launcherPush();
+  assert.deepEqual(sent, ["launcher-open", "tap 59", "tap 59"]);
+  assert.equal(c.launcher, "choosing");
+  c.stop();
+});
+
+test("launcher: if Spotlight was closed, nothing is opened and the knob starts over", async () => {
+  const { c, sent, logs } = launcherFake({ gone: true }); // opens, then reports Spotlight gone
+  c.launcherPush();
+  await tick(5);
+  await c.launcherTurn(1);
+  assert.equal(c.launcher, "idle", "turned after Spotlight closed: reset");
+  assert.ok(sent.includes("up 59"), "and the dictation key let go");
+  assert.ok(logs.some((l) => l.includes("launcher reset (Spotlight was closed)")));
+  c.stop();
+});
+
+test("launcher: Spotlight didn't open, so no dictation starts", async () => {
+  const { c, sent } = launcherFake({ open: "launcher failed" });
+  c.launcherPush();
+  await tick(5);
+  assert.deepEqual(sent, ["launcher-open"]);
+  assert.equal(c.launcher, "idle");
+});
+
+test("launcher: another knob or key letting go of dictation moves it on to choosing", async () => {
+  const { c } = launcherFake();
+  c.launcherPush();
+  await tick(5);
+  c.letGo("another knob pushed");
+  assert.equal(c.launcher, "choosing", "so the next push opens the pick instead of dictating again");
+  c.stop();
+});
+
+test("launcher resets itself when left alone, letting go of the dictation key", async () => {
+  const steps = [];
+  const f = fake({ launcherLimitMs: 15, onChange: (s) => steps.push(s) });
+  f.c.helper.write = (l) => (f.sent.push(l), l === "launcher-open" && setTimeout(() => f.c.onLine("launcher open"), 0), true);
+  f.c.launcherPush();
+  await tick(40);
+  assert.equal(f.c.launcher, "idle");
+  assert.ok(f.sent.includes("up 59"));
+});
+
+test("no reply from the key helper: the launcher gives up", async () => {
+  const f = fake({ askMs: 10 });
+  f.c.launcherPush();
+  await tick(30);
+  assert.equal(f.c.launcher, "idle");
+  assert.ok(f.logs.some((l) => l.includes("Spotlight didn't open (no reply)")));
 });
 
 test("turning the third knob scrolls: one command per turn, nothing for zero", () => {

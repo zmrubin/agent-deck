@@ -10,15 +10,12 @@
 
 const FONT = "Helvetica Neue, Helvetica, Arial, sans-serif";
 
+// Strip colors for the agent view (keys show the agent's app icon instead).
 export const THEME = {
-  working: { bg: "#1e40af", fg: "#ffffff", sub: "#bfdbfe", label: "WORKING", head: "is working" },
-  waiting: {
-    bg: "#f59e0b", fg: "#1c1300", sub: "#3b2a00",
-    bgAlt: "#1c1300", fgAlt: "#fbbf24", subAlt: "#fbbf24",
-    label: "NEEDS YOU", head: "needs a decision",
-  },
-  done: { bg: "#166534", fg: "#ffffff", sub: "#bbf7d0", label: "DONE", head: "finished" },
-  idle: { bg: "#334155", fg: "#ffffff", sub: "#cbd5e1", label: "READY", head: "is ready" },
+  working: { bg: "#1e40af", fg: "#ffffff", sub: "#bfdbfe", head: "is working" },
+  waiting: { bg: "#f59e0b", fg: "#1c1300", sub: "#3b2a00", head: "needs a decision" },
+  done: { bg: "#166534", fg: "#ffffff", sub: "#bbf7d0", head: "finished" },
+  idle: { bg: "#334155", fg: "#ffffff", sub: "#cbd5e1", head: "is ready" },
 };
 
 export function esc(s) {
@@ -83,59 +80,29 @@ export function wrapPx(text, maxW, size, bold, maxLines) {
 }
 
 // ---------------------------------------------------------------- keys
+//
+// App and agent keys share one look: an icon above a name on a pure black
+// key (true black, so every key's background matches the deck's own black).
+// An agent's key shows the icon of the app it runs in (Claude, a terminal…)
+// over its project name. Working or ready, the icon just sits there; when the
+// agent needs you, the icon blinks larger and smaller:
+//   done     until you press its key
+//   waiting  until it's answered (its name turns amber)
+// PULSE is the icon's size per animation frame (main.mjs steps it).
 
-/** Split a project name into at most two short lines for a key. */
-function nameLines(name, perLine) {
-  const parts = String(name).split(/(?<=[-_. ])/);
-  const lines = [""];
-  for (const p of parts) {
-    const i = lines.length - 1;
-    if ((lines[i] + p).length <= perLine || !lines[i]) lines[i] += p;
-    else lines.push(p);
-  }
-  return wrap(lines.map((l) => l.replace(/[-_. ]$/, "")).join(" "), perLine, 2);
+export const PULSE = [1, 0.7];
+
+/** Whether an agent's key pulses: it needs a decision, or it finished and you haven't pressed its key since. */
+export function wantsAttention(agent, seen = false) {
+  return agent?.state === "waiting" || (agent?.state === "done" && !seen);
 }
 
-export function keySvg({ agent, name, slot, blinkOn = true }) {
-  const S = 144;
-  if (!agent) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}" viewBox="0 0 ${S} ${S}">`
-      + `<rect width="${S}" height="${S}" fill="#0b0d10"/>`
-      + `<text x="72" y="86" font-family="${FONT}" font-size="40" font-weight="700" fill="#262b33" text-anchor="middle">${slot}</text>`
-      + `</svg>`;
-  }
-  const t = THEME[agent.state] || THEME.idle;
-  const dim = agent.state === "waiting" && !blinkOn;
-  const bg = dim ? t.bgAlt : t.bg;
-  const fg = dim ? t.fgAlt : t.fg;
-  const sub = dim ? t.subAlt : t.sub;
+const KEY = 144;
+const KEY_BG = "#000000";
 
-  const short = String(name).length <= 6;
-  const size = short ? 32 : 25;
-  const lines = nameLines(name, short ? 6 : 9);
-  const mid = lines.length === 1 ? [80] : [66, 96];
-  const nameSvg = lines
-    .map((l, i) => `<text x="72" y="${mid[i]}" font-family="${FONT}" font-size="${size}" font-weight="700" fill="${fg}" text-anchor="middle">${esc(l)}</text>`)
-    .join("");
-
-  const border = dim ? `<rect x="5" y="5" width="${S - 10}" height="${S - 10}" fill="none" stroke="${t.fgAlt}" stroke-width="8"/>` : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}" viewBox="0 0 ${S} ${S}">`
-    + `<rect width="${S}" height="${S}" fill="${bg}"/>${border}`
-    + `<text x="14" y="28" font-family="${FONT}" font-size="17" font-weight="700" fill="${sub}">${slot}</text>`
-    + nameSvg
-    + `<text x="72" y="130" font-family="${FONT}" font-size="16" font-weight="700" letter-spacing="1" fill="${sub}" text-anchor="middle">${t.label}</text>`
-    + `</svg>`;
-}
-
-/**
- * Key for a running app (a key no agent needs): its icon and name on a dark
- * background, so it reads differently from the colored agent keys.
- * app = { name, icon? } where icon is a PNG data URL.
- */
-export function appKeySvg({ app }) {
-  const S = 144;
-  const W = S - 14; // usable text width
-  const name = String(app.name || "");
+/** Name lines and where the icon and name go: one line under an 80px icon, or two under a 64px one. */
+function iconKeyLayout(name) {
+  const W = KEY - 14; // usable text width
   // One line at 20px if it fits, else 16px, else two lines at 16px under a smaller icon.
   let size = 20;
   let lines = [name];
@@ -144,18 +111,55 @@ export function appKeySvg({ app }) {
     lines = wrapPx(name, W, 16, true, textWidth(name, 16, true) > W ? 2 : 1);
   }
   const two = lines.length > 1;
-  const icon = two ? { x: 40, y: 10, s: 64 } : { x: 32, y: 12, s: 80 };
-  const base = two ? [102, 122] : [126];
+  return { size, lines, box: two ? { x: 40, y: 10, s: 64 } : { x: 32, y: 12, s: 80 }, base: two ? [102, 122] : [126] };
+}
 
-  const iconSvg = app.icon
-    ? `<image x="${icon.x}" y="${icon.y}" width="${icon.s}" height="${icon.s}" xlink:href="${esc(app.icon)}"/>`
-    : `<rect x="${icon.x + 6}" y="${icon.y + 6}" width="${icon.s - 12}" height="${icon.s - 12}" rx="${(icon.s - 12) / 4.5}" fill="#334155"/>`
-      + `<text x="72" y="${icon.y + icon.s / 2 + 12}" font-family="${FONT}" font-size="34" font-weight="700" fill="#e2e8f0" text-anchor="middle">${esc([...name][0]?.toUpperCase() || "?")}</text>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${S}" height="${S}" viewBox="0 0 ${S} ${S}">`
-    + `<rect width="${S}" height="${S}" fill="#111318"/>`
-    + iconSvg
-    + lines.map((l, i) => `<text x="72" y="${base[i]}" font-family="${FONT}" font-size="${size}" font-weight="700" fill="#cbd5e1" text-anchor="middle">${esc(l)}</text>`).join("")
-    + `</svg>`;
+/** An icon (PNG data URL) in `box`, or a rounded tile with `letter` when there's none. */
+function iconMarkup(box, icon, letter) {
+  if (icon) return `<image x="${box.x}" y="${box.y}" width="${box.s}" height="${box.s}" xlink:href="${esc(icon)}"/>`;
+  const font = Math.round(box.s * 0.42);
+  return `<rect x="${box.x + box.s * 0.075}" y="${box.y + box.s * 0.075}" width="${box.s * 0.85}" height="${box.s * 0.85}" rx="${(box.s * 0.85) / 4.5}" fill="#334155"/>`
+    + `<text x="72" y="${Math.round(box.y + box.s / 2 + font * 0.35)}" font-family="${FONT}" font-size="${font}" font-weight="700" fill="#e2e8f0" text-anchor="middle">${esc(letter)}</text>`;
+}
+
+function iconKey(body) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${KEY}" height="${KEY}" viewBox="0 0 ${KEY} ${KEY}">`
+    + `<rect width="${KEY}" height="${KEY}" fill="${KEY_BG}"/>${body}</svg>`;
+}
+
+const nameMarkup = ({ lines, base, size }, fill) =>
+  lines.map((l, i) => `<text x="72" y="${base[i]}" font-family="${FONT}" font-size="${size}" font-weight="700" fill="${fill}" text-anchor="middle">${esc(l)}</text>`).join("");
+
+const initial = (s) => [...String(s || "")][0]?.toUpperCase() || "?";
+
+/**
+ * Key for one agent: `icon` is the PNG data URL of the app it runs in (null:
+ * a letter tile). `frame` steps the blink; `seen`: its key was pressed since
+ * it finished, so a done agent stops blinking. No agent: an empty key with
+ * its slot number.
+ */
+export function keySvg({ agent, name, slot, icon = null, frame = 0, seen = false }) {
+  if (!agent) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${KEY}" height="${KEY}" viewBox="0 0 ${KEY} ${KEY}">`
+      + `<rect width="${KEY}" height="${KEY}" fill="${KEY_BG}"/>`
+      + `<text x="72" y="86" font-family="${FONT}" font-size="40" font-weight="700" fill="#262b33" text-anchor="middle">${slot}</text>`
+      + `</svg>`;
+  }
+  const L = iconKeyLayout(String(name ?? ""));
+  const scale = wantsAttention(agent, seen) ? PULSE[((frame % PULSE.length) + PULSE.length) % PULSE.length] : 1;
+  const s = Math.round(L.box.s * scale);
+  const box = { x: L.box.x + (L.box.s - s) / 2, y: L.box.y + (L.box.s - s) / 2, s }; // shrinks about its center
+  return iconKey(iconMarkup(box, icon, initial(name)) + nameMarkup(L, agent.state === "waiting" ? "#fbbf24" : "#e2e8f0"));
+}
+
+/**
+ * Key for a running app (a key no agent needs): its icon and name on a dark
+ * key. app = { name, icon? } where icon is a PNG data URL.
+ */
+export function appKeySvg({ app }) {
+  const name = String(app.name || "");
+  const L = iconKeyLayout(name);
+  return iconKey(iconMarkup(L.box, app.icon, initial(name)) + nameMarkup(L, "#cbd5e1"));
 }
 
 // ---------------------------------------------------------------- strip
@@ -224,20 +228,25 @@ export const PAGE = 6; // lines on the strip: two columns of three
  * then up to six lines (two columns of three) from context.mjs. Unread lines
  * get a dot; the current tab or window gets a bar. context = null: still reading.
  *
- * Tab picker: when the app has tabs and `cursor` (an index into context.tabs)
- * is given, the strip pages through every tab instead, with the one at the
- * cursor highlighted.
+ * Picker: when the app has picks (tabs, conversations, chats, notes) and
+ * `cursor` (an index into context.picks) is given, the strip pages through
+ * all of them instead, with the one at the cursor highlighted.
  */
 export function contextScene({ app, context, cursor }) {
   const COLS = 2;
   const ROWS = 3;
   const colW = (STRIP_W - 2 * PAD + 24) / COLS - 24; // 24px between columns
   const size = 19;
-  const picking = context?.tabs?.length && Number.isInteger(cursor);
-  const at = picking ? Math.max(0, Math.min(cursor, context.tabs.length - 1)) : 0;
+  const picks = context?.picks;
+  const picking = picks?.length && Number.isInteger(cursor);
+  const at = picking ? Math.max(0, Math.min(cursor, picks.length - 1)) : 0;
   const first = picking ? Math.floor(at / PAGE) * PAGE : 0;
+  // While picking: "Tab 3 of 12 · 2 windows", "Conversation 1 of 40 · 2 unread".
+  const extra = !picking ? ""
+    : context.noun === "Tab" ? context.summary.split(" in ")[1] || ""
+    : /^Recent/.test(context.summary) ? "" : context.summary;
   const summary = !context ? "Reading…"
-    : picking ? `Tab ${at + 1} of ${context.tabs.length}` + (context.summary.includes(" in ") ? ` · ${context.summary.split(" in ")[1]}` : "")
+    : picking ? `${context.noun || "Item"} ${at + 1} of ${picks.length}` + (extra ? ` · ${extra}` : "")
     : context.summary;
   const sumW = Math.min(textWidth(summary, 19) + 4, 360);
   const icon = app.icon
@@ -247,7 +256,7 @@ export function contextScene({ app, context, cursor }) {
   const name = fitPx(app.name, STRIP_W - PAD - nameX - sumW - 20, 26, true);
 
   const items = picking
-    ? context.tabs.slice(first, first + PAGE).map((t, i) => ({ ...t, active: t.current, picked: first + i === at }))
+    ? picks.slice(first, first + PAGE).map((t, i) => ({ ...t, active: t.current, picked: first + i === at }))
     : (context?.items || []).slice(0, COLS * ROWS);
   const lines = items.map((it, i) => {
     const col = Math.floor(i / ROWS);
@@ -288,11 +297,32 @@ export function contextScene({ app, context, cursor }) {
     + lines + empty;
 }
 
+const LAUNCHER_STEPS = {
+  opening: { title: "Opening Spotlight…", hint: "" },
+  listening: { title: "Listening…", hint: "Say what to open, then push knob 1" },
+  choosing: { title: "Pick a result", hint: "Turn knob 1 to choose · push knob 1 to open it" },
+};
+
+/** Strip scene while knob 1's launcher is open: which step it's on and what the next push does. */
+export function launcherScene({ step }) {
+  const s = LAUNCHER_STEPS[step] || LAUNCHER_STEPS.opening;
+  const dot = step === "listening" ? `<circle cx="${PAD + 9}" cy="34" r="9" fill="#ef4444"/>` : "";
+  const x = dot ? PAD + 28 : PAD;
+  return `<rect width="${STRIP_W}" height="${STRIP_H}" fill="#0b1220"/>`
+    + `<rect width="${STRIP_W}" height="4" fill="#a78bfa"/>`
+    + dot
+    + `<text x="${x}" y="44" font-family="${FONT}" font-size="32" font-weight="700" fill="#f1f5f9">${esc(s.title)}</text>`
+    + `<text x="${STRIP_W - PAD}" y="41" font-family="${FONT}" font-size="19" fill="#94a3b8" text-anchor="end">Spotlight</text>`
+    + (s.hint ? `<text x="${PAD}" y="94" font-family="${FONT}" font-size="24" fill="#cbd5e1">${esc(s.hint)}</text>` : "");
+}
+
 /**
  * The whole 800x128 strip scene as SVG body markup (no outer <svg>), in real
- * strip pixels. `app` (with `context`): show that app instead of the agents.
+ * strip pixels. `launcher` (a step): knob 1's launcher is open. `app` (with
+ * `context`): show that app instead of the agents.
  */
-export function stripScene({ agent, name, index = 0, total = 0, counts = {}, app, context, cursor }) {
+export function stripScene({ agent, name, index = 0, total = 0, counts = {}, app, context, cursor, launcher }) {
+  if (launcher) return launcherScene({ step: launcher });
   if (app) return contextScene({ app, context, cursor });
   if (agent?.request) return decisionScene({ name, request: agent.request, index, total });
   if (!agent) {

@@ -6,6 +6,12 @@
 // permission OpenDeck already has for the knobs); describe() turns it into a
 // summary and up to six strip lines. Only the app the strip is showing is read,
 // when its key is pressed and every few seconds after.
+//
+// Picker: what knob 1 moves through on the strip, and opens when pushed.
+// describe() lists every entry as `picks` (with `noun` naming one):
+//   { kind: "tab" | "row", group, index, title, text?, time?, unread?, current }
+// A tab is tab `index` of window `group`; a row is row `index` of the snapshot's
+// list `group` (a conversation, chat or note). open() switches to one.
 
 import { fileURLToPath } from "node:url";
 import { run, swiftHelper } from "./helpers.mjs";
@@ -22,6 +28,9 @@ const TIME = /^(\d{1,2}:\d{2}\s?([AP]M)?|Today|Yesterday|(Mon|Tues|Wednes|Thurs|
 
 /** First list in the snapshot matching `test`. */
 const list = (snap, test) => (snap.lists || []).find(test);
+
+/** Where a list row is, for the picker: open() selects it with context.swift. */
+const rowAt = (l, r) => ({ kind: "row", group: l.index ?? 0, index: r.index ?? 0, current: !!r.selected });
 
 /** Latest messages of the open chat, newest first: rows read "Sender, text, time". */
 function transcript(l, chat) {
@@ -51,10 +60,10 @@ function messages(snap) {
     const unread = parts[0] === "Unread";
     if (unread) parts.shift();
     const time = parts.length > 1 && TIME.test(parts.at(-1)) ? parts.pop() : "";
-    items.push({ title: name, text: parts.join(", "), time, unread });
+    items.push({ title: name, text: parts.join(", "), time, unread, ...rowAt(l, r) });
   }
   const n = items.filter((i) => i.unread).length;
-  return { summary: n ? `${n} unread` : "Recent conversations", items };
+  return { summary: n ? `${n} unread` : "Recent conversations", items, picks: items, noun: "Conversation" };
 }
 
 /** WhatsApp's last-message text: "Message from X, text, 1:42 PM, Received in Chat" → "X: text". */
@@ -89,13 +98,13 @@ function whatsapp(snap) {
     const unread = Number(/(\d[\d,]*) unread messages?/.exec(desc)?.[1]?.replace(/,/g, "") || 0);
     const title = desc.replace(/, \d[\d,]* unread messages?.*$/, "");
     const { text, time } = whatsappPreview(r.value || "");
-    items.push({ title, text, time, unread: unread > 0, count: unread });
+    items.push({ title, text, time, unread: unread > 0, count: unread, ...rowAt(l, r) });
   }
   const chips = list(snap, (x) => x.id === "ChatListView_chipButtonsCell");
   const chip = chips?.rows.map((r) => clean(r.desc)).find((d) => /^Unread, /.test(d));
   const chats = /(\d[\d,]*) unread chats?/.exec(chip || "")?.[1];
   const n = items.filter((i) => i.unread).length;
-  return { summary: chats ? `${chats} unread chats` : n ? plural(n, "unread chat") : "Recent chats", items };
+  return { summary: chats ? `${chats} unread chats` : n ? plural(n, "unread chat") : "Recent chats", items, picks: items, noun: "Chat" };
 }
 
 /** Notes: each note row's texts are [title, date, folder?, preview]; one-text rows are date headings. */
@@ -103,10 +112,10 @@ function notes(snap) {
   const l = list(snap, (x) => /^ICMNoteListTableView/.test(x.id));
   if (!l) return null;
   const items = l.rows
-    .map((r) => (r.texts || []).map(clean))
-    .filter((t) => t.length >= 2)
-    .map((t) => ({ title: t[0], text: t[3] || "", time: t[1] }));
-  return { summary: clean(snap.windows?.[0]?.title) || "Recent notes", items };
+    .map((r) => ({ r, t: (r.texts || []).map(clean) }))
+    .filter(({ t }) => t.length >= 2)
+    .map(({ r, t }) => ({ title: t[0], text: t[3] || "", time: t[1], ...rowAt(l, r) }));
+  return { summary: clean(snap.windows?.[0]?.title) || "Recent notes", items, picks: items, noun: "Note" };
 }
 
 // Chrome appends memory notes to tab titles.
@@ -119,8 +128,8 @@ export function cleanTab(title) {
 
 /**
  * Any app with a tab bar: the main window's tabs (current first), then other
- * windows' current tabs; and `tabs`, every tab in order for the tab picker:
- * { title, window, index (what `press` takes), current (selected in its window), text }.
+ * windows' current tabs; and `picks`, every tab in order (window by window),
+ * `current` marking the one selected in its window.
  */
 function tabs(snap) {
   const wins = (snap.windows || []).map((w, wi) => ({ ...w, wi })).filter((w) => w.tabs?.length);
@@ -136,11 +145,12 @@ function tabs(snap) {
   // Keep room for the other windows' current tabs.
   const keep = Math.max(MAX_ITEMS - others.length, Math.min(items.length, 3));
   const all = wins.flatMap((w, n) =>
-    w.tabs.map((t, index) => ({ title: cleanTab(t.title), window: w.wi, index, current: !!t.selected, ...(n > 0 && { text: `window ${n + 1}` }) })));
+    w.tabs.map((t, index) => ({ kind: "tab", group: w.wi, index, title: cleanTab(t.title), current: !!t.selected, ...(n > 0 && { text: `window ${n + 1}` }) })));
   return {
     summary: plural(total, "tab") + (wins.length > 1 ? ` in ${wins.length} windows` : ""),
     items: [...items.slice(0, keep), ...others],
-    tabs: all,
+    picks: all,
+    noun: "Tab",
   };
 }
 
@@ -171,37 +181,71 @@ export function describe(app, snap) {
     return { summary: "Needs Accessibility for OpenDeck", items: [{ title: "System Settings → Privacy & Security → Accessibility" }] };
   }
   const out = BY_BUNDLE[app.bundleId]?.(snap) || tabs(snap) || windows(app, snap);
+  const picks = out.picks?.filter((p) => p.title);
   return {
     summary: out.summary,
     items: out.items.filter((i) => i.title || i.text).slice(0, MAX_ITEMS),
-    ...(out.tabs?.length && { tabs: out.tabs }),
+    ...(picks?.length && { picks, noun: out.noun }),
   };
 }
 
 /**
- * The tab picker's cursor ({ index, title, window }) for a fresh `tabs` list.
- * Starts on the front window's current tab; afterwards follows the same tab
- * (by title) as tabs open, close and move, else stays at the same position.
+ * The picker's cursor ({ index, title, group }) for a fresh `picks` list.
+ * Starts on the current entry (the front window's current tab, the open
+ * conversation); afterwards follows the same entry (by title) as entries come,
+ * go and move, else stays at the same position.
  */
-export function tabCursor(prev, tabs) {
-  if (!tabs?.length) return null;
-  const at = (i) => ({ index: i, title: tabs[i].title, window: tabs[i].window });
+export function pickCursor(prev, picks) {
+  if (!picks?.length) return null;
+  const at = (i) => ({ index: i, title: picks[i].title, group: picks[i].group });
   if (!prev) {
-    const cur = tabs.findIndex((t) => t.current && t.window === tabs[0].window);
+    const cur = picks.findIndex((p) => p.current && p.group === picks[0].group);
     return at(cur >= 0 ? cur : 0);
   }
-  const here = tabs[prev.index];
-  if (here && here.title === prev.title && here.window === prev.window) return at(prev.index);
-  let i = tabs.findIndex((t) => t.title === prev.title && t.window === prev.window);
-  if (i < 0) i = tabs.findIndex((t) => t.title === prev.title);
-  return at(i >= 0 ? i : Math.min(prev.index, tabs.length - 1));
+  const here = picks[prev.index];
+  if (here && here.title === prev.title && here.group === prev.group) return at(prev.index);
+  let i = picks.findIndex((p) => p.title === prev.title && p.group === prev.group);
+  if (i < 0) i = picks.findIndex((p) => p.title === prev.title);
+  return at(i >= 0 ? i : Math.min(prev.index, picks.length - 1));
 }
 
-/** Move the cursor by `ticks` tabs, wrapping around the ends. */
-export function moveCursor(cursor, tabs, ticks) {
-  const n = tabs.length;
+/** Move the cursor by `ticks` entries, wrapping around the ends. */
+export function moveCursor(cursor, picks, ticks) {
+  const n = picks.length;
   const i = ((((cursor?.index ?? 0) + Math.trunc(ticks || 0)) % n) + n) % n;
-  return { index: i, title: tabs[i].title, window: tabs[i].window };
+  return { index: i, title: picks[i].title, group: picks[i].group };
+}
+
+/**
+ * Context reads, one at a time per app: a slow app never holds up reading
+ * another (switching app keys reads the new app at once), and asking again
+ * with `soon` while an app is being read reads it once more when that ends.
+ * read(app) → Promise of its context; settled(app, { context | error, ms, again }).
+ */
+export class AppReads {
+  constructor({ read, settled, now = () => Date.now() }) {
+    Object.assign(this, { read, settled, now });
+    this.running = new Map(); // app key -> true, or "again"
+  }
+
+  /** Start reading `app` unless it's being read already. Returns whether a read started. */
+  request(app, { soon = false } = {}) {
+    if (this.running.has(app.key)) {
+      if (soon) this.running.set(app.key, "again");
+      return false;
+    }
+    this.running.set(app.key, true);
+    const started = this.now();
+    Promise.resolve()
+      .then(() => this.read(app))
+      .then((context) => ({ context }), (error) => ({ error }))
+      .then((r) => {
+        const again = this.running.get(app.key) === "again";
+        this.running.delete(app.key);
+        this.settled(app, { ...r, ms: this.now() - started, again });
+      });
+    return true;
+  }
 }
 
 /** Reads an app's context with the compiled context.swift helper. */
@@ -232,11 +276,12 @@ export class ContextReader {
     return describe(app, JSON.parse(out));
   }
 
-  /** Switch `app` to `tab` (from describe()'s `tabs`) and raise its window. Resolves { pressed, title }. */
-  async pressTab(app, tab) {
+  /** Switch `app` to `pick` (from describe()'s `picks`: a tab, or a conversation, chat or note) and raise its window. Resolves { pressed }. */
+  async open(app, pick) {
     if (process.platform !== "darwin" || !app?.pid) return { pressed: false };
     this.warm();
-    const out = await run(await this.bin, [String(app.pid), "press", String(tab.window), String(tab.index), tab.title], this.timeoutMs);
+    const command = pick.kind === "row" ? "select" : "press";
+    const out = await run(await this.bin, [String(app.pid), command, String(pick.group), String(pick.index), pick.title], this.timeoutMs);
     return JSON.parse(out);
   }
 }

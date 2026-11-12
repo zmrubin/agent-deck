@@ -10,10 +10,17 @@
 //   down <keycode>   hold a key down
 //   up <keycode>     release a held key
 //   prompt           ask macOS for the Accessibility permission if it's missing
+//   launcher-open    Cmd-Space, then wait for the app launcher (Spotlight) to
+//                    take focus; prints "launcher open" or "launcher failed"
+//   launcher-move <n>  Down arrow n times (Up when n < 0) while the launcher has
+//                    focus; prints "launcher moved", or "launcher gone" if it closed
+//   launcher-return  Return while the launcher has focus; prints "launcher opened",
+//                    or "launcher gone" (and presses nothing) if it closed
 // Prints "trusted" or "untrusted" at start: whether macOS lets it post keys
 // (the permission belongs to the app that launched it, i.e. OpenDeck).
 // Releases any key it's holding when stdin closes.
 
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -130,6 +137,57 @@ func click() -> String {
   return "click mouse \(Int(at.x)),\(Int(at.y))"
 }
 
+/// The app with keyboard focus (Spotlight's panel counts while it's open).
+func focusedPid() -> pid_t? {
+  let system = AXUIElementCreateSystemWide()
+  AXUIElementSetMessagingTimeout(system, 0.5)
+  var app: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &app) == .success,
+        let app, CFGetTypeID(app) == AXUIElementGetTypeID() else { return nil }
+  var pid: pid_t = 0
+  return AXUIElementGetPid(app as! AXUIElement, &pid) == .success ? pid : nil
+}
+
+/// What Cmd-Space opens: Spotlight, or a launcher that took over its shortcut.
+let launchers: Set<String> = ["com.apple.Spotlight", "com.raycast.macos", "com.runningwithcrayons.Alfred", "at.obdev.LaunchBar"]
+func isLauncher(_ pid: pid_t?) -> Bool {
+  guard let pid, let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier else { return false }
+  return launchers.contains(id)
+}
+/// The launcher's process while it's open (launcher-open found it).
+var launcherPid: pid_t?
+func launcherOpen() -> Bool { launcherPid != nil && focusedPid() == launcherPid }
+
+/// Tap a key `count` times with `flags` (and nothing we're holding).
+func taps(_ key: CGKeyCode, _ count: Int, _ flags: CGEventFlags) {
+  for _ in 0..<min(count, 20) {
+    post(key, down: true, flags: flags)
+    post(key, down: false, flags: flags)
+    usleep(4_000)
+  }
+}
+// Arrow keys carry the keypad and Fn flags on real keyboards.
+let arrowFlags = CGEventFlags(rawValue: 0x100 | CGEventFlags.maskNumericPad.rawValue | CGEventFlags.maskSecondaryFn.rawValue)
+
+func openLauncher() -> String {
+  let before = focusedPid()
+  if isLauncher(before) { // already open: Cmd-Space again would close it
+    launcherPid = before
+    return "launcher open"
+  }
+  taps(49, 1, CGEventFlags(rawValue: 0x100 | CGEventFlags.maskCommand.rawValue | 0x0008)) // Cmd-Space
+  for _ in 0..<25 { // up to ~0.75 s for it to appear
+    usleep(30_000)
+    let now = focusedPid()
+    if now != before, isLauncher(now) {
+      launcherPid = now
+      return "launcher open"
+    }
+  }
+  launcherPid = nil
+  return "launcher failed"
+}
+
 print(AXIsProcessTrusted() ? "trusted" : "untrusted")
 
 while let line = readLine() {
@@ -159,6 +217,18 @@ while let line = readLine() {
     if let k = arg.map({ CGKeyCode($0) }) { press(k) }
   case "up":
     if let k = arg.map({ CGKeyCode($0) }) { release(k) }
+  case "launcher-open":
+    print(openLauncher())
+  case "launcher-move":
+    let n = arg ?? 1
+    guard launcherOpen() else { print("launcher gone"); break }
+    taps(n < 0 ? 126 : 125, abs(n), arrowFlags) // Up / Down
+    print("launcher moved")
+  case "launcher-return":
+    guard launcherOpen() else { print("launcher gone"); break }
+    taps(36, 1, CGEventFlags(rawValue: 0x100)) // Return
+    launcherPid = nil
+    print("launcher opened")
   case "prompt":
     let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
     print(AXIsProcessTrustedWithOptions(options) ? "trusted" : "untrusted")

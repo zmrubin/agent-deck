@@ -1,8 +1,10 @@
 # Agent Deck
 
-A stream-deck view of your AI coding agents. Each key is one running agent;
-it **blinks when that agent is halted on a decision**, and the touch strip
-says what it needs. Press the key to jump to the agent's app.
+A stream-deck view of your AI coding agents. Each key is one running agent,
+shown with the icon of the app it runs in; its icon **blinks larger and
+smaller when that agent needs a decision or has finished**, and the touch
+strip says what it needs. Press the
+key to jump to the agent's app.
 
 Prototype status: an [OpenDeck](https://github.com/nekename/OpenDeck) plugin
 (Stream Deck SDK format), developed on a Streonor S10 Pro (Mirabox N4 family:
@@ -19,12 +21,16 @@ Claude Code ──hook──▶ hooks/agent-deck-hook.sh ──HTTP──▶ plu
 
 | Key | Meaning |
 |---|---|
-| Blue **WORKING** | Agent is busy |
-| Amber **NEEDS YOU**, blinking | Agent is waiting on a permission/decision |
-| Green **DONE** | Finished its turn — your move |
-| Slate **READY** | Session started, nothing asked yet |
-| Dark, app icon + name | A running app (no agent needs this key); press to bring it to the front |
-| Dark number | Empty slot |
+| Agent's app icon (Claude, a terminal…) + project name, steady | Agent is working, or ready and hasn't been asked anything |
+| Icon blinking larger and smaller | Finished its turn — your move. Stops once you press its key |
+| Icon blinking, project name in amber | Waiting on a permission/decision |
+| App icon + app name | A running app (no agent needs this key); press to bring it to the front |
+| Dim number | Empty slot |
+
+The blink switches the icon between full size and 70% once a second (`PULSE`
+in `src/render.mjs`). An agent with no app icon to show gets a letter tile
+instead. Every key's background is pure black, so it matches the deck's own
+black instead of glowing faintly.
 
 Agents always get keys first, in the order sessions start. Keys no agent
 needs show your most recently used apps that have a window open (apps with a
@@ -45,37 +51,57 @@ The app list follows launches, quits and app switches as they happen
 so a tiny Swift helper (`src/windows.swift`, compiled on first run into
 `~/Library/Caches/agent-deck/`; needs the Xcode command line tools) checks the
 window list once a second, using well under 1% of a core. Without the
-command line tools, apps with no windows simply stay on the deck. The touch strip
-features the most urgent agent (waiting first); turn one of the first two
-knobs to cycle through agents; push one of the first two or tap the strip to
-jump to the featured one.
+command line tools, apps with no windows simply stay on the deck. While no app
+is on it, the touch strip features the most urgent agent (waiting first), or
+the one whose key you pressed; turn one of the first two knobs to cycle
+through agents; push the second to jump to the featured one.
 
-**Press an app key and the strip shows that app** until you press an agent key
-or turn a knob to go back to the agents (a permission question always takes
-the strip). It's re-read every 3 seconds while it's showing:
+**Press an app key and the strip shows that app** until you press an agent's
+key, which shows that agent instead. Agents finishing don't take it over, and
+turning the first two knobs doesn't switch it back (a permission question
+always takes the strip). It's re-read every 3 seconds while it's showing:
 
 | App | Strip shows |
 |---|---|
-| Messages | Recent conversations with the last message and time, unread marked; while you search, the open chat's latest messages |
-| WhatsApp | Recent chats with the last message, unread counts and the total unread |
-| Notes | Recent notes with their dates |
-| Chrome, Safari, Terminal, Finder… (any tab bar) | **Tab picker**: every open tab, six at a time, starting on the current one (blue bar). Turn knob 1 to move the highlight, push knob 1 to switch to that tab and bring the app forward |
+| Messages | **Conversation picker**: recent conversations with the last message and time, unread marked, starting on the open one; while you search, the open chat's latest messages |
+| WhatsApp | **Chat picker**: recent chats with the last message, unread counts and the total unread |
+| Notes | **Note picker**: recent notes with their dates |
+| Chrome, Safari, Terminal, Finder… (any tab bar) | **Tab picker**: every open tab, starting on the current one (blue bar) |
 | Anything else | Its window titles, the front one marked |
+
+On a picker, six entries show at a time. Turn knob 2 to move the highlight
+(it pages on past the sixth), and push knob 2 to open that tab, conversation,
+chat or note and bring the app forward (on the one that's already open it
+just brings the app forward: pressing an open conversation again would make
+Messages open it in a window of its own). Only what the app has loaded can be
+picked: Messages and WhatsApp list just the conversations on screen, about a
+dozen. Lists are read from the app's first three windows, so a chat in its
+own window doesn't hide the conversation list.
 
 It's read through Accessibility (`src/context.swift`, the same permission the
 knobs use), from the app's own window, so it only sees what that app has on
-screen on the current desktop. Pushing knob 1 or 2 while an app is showing
-jumps to that app (knob 1 on the tab picker switches to the highlighted tab). `GET /context` shows what was read.
+screen on the current desktop. Pushing knob 2 while an app is showing jumps
+to that app (on a picker it opens the highlighted entry). `GET /context` shows what was read.
 
-The two rightmost knobs control the computer:
+The knobs also control the computer:
+
+- **First (leftmost) knob, push** to open an app by voice: the first push
+  opens Spotlight (Cmd-Space) and starts Snaply dictation, so say what to
+  open; push again to stop, and the words land in Spotlight's search box;
+  **turn** it to move through the results; push a third time to open the
+  highlighted one (Return). The strip shows which step you're on. Each step
+  first checks Spotlight is still open, so if you closed it (Escape, a click
+  elsewhere) nothing is pressed and the knob starts over; it also starts over
+  after two minutes unused.
 
 - **Third knob, turn** to scroll, like a mouse wheel, wherever the pointer is
   (down turning right).
 - **Third knob, push** to start dictation in Snaply, push again to
   stop. It presses Snaply's own dictation shortcut (read from
   `~/.snaply/settings.json` each time). With Snaply set to *hold* (push-to-talk)
-  the knob holds the key down until the next push (let go after five minutes
-  regardless), so typing in between carries that modifier; with
+  the knob holds the key down until the next push (or any other key or knob
+  push on the deck, or five minutes), so typing in between carries that
+  modifier. A touch on the strip above this knob counts as a push too; with
   *toggle* or *combined* it just taps the key. If Snaply isn't running, the
   push opens it.
 - **Fourth (rightmost) knob, turn** to move between fields in the app in front

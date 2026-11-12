@@ -16,37 +16,44 @@
 // Keys: every agent gets a key first; keys left over show running apps
 // (apps.mjs), with assignments kept stable by slots.mjs.
 //
-// Strip: pressing an app key shows that app's context there (context.mjs:
-// recent messages, tabs, windows…) until an agent key is pressed or a knob
-// turned to cycle agents. A permission question always takes the strip.
+// Agent keys show the icon of the app the agent runs in; a key pulses while
+// its agent needs a decision, or has finished and you haven't pressed its key
+// since (render.mjs).
 //
-// The deck goes dark while the Mac's displays sleep (power.mjs). The two
-// rightmost knobs control the computer (controls.mjs): turn the third to
+// Strip: pressing an app key shows that app's context there (context.mjs:
+// recent messages, tabs, windows…) until an agent key is pressed, which shows
+// that agent instead. A permission question always takes the strip.
+//
+// The deck goes dark while the Mac's displays sleep (power.mjs). The knobs
+// control the computer (controls.mjs): push the first to open Spotlight and
+// dictate, again to stop, turn it through the results and push a third time
+// to open one; while the strip lists an app's tabs, conversations, chats or
+// notes, the second picks one (turn to move, push to open); turn the third to
 // scroll, push it to dictate with Snaply; turn the fourth to move between
-// fields, push it to click. While the strip lists an app's tabs, the first
-// knob picks one: turn to move, push to switch to it.
+// fields, push it to click.
 //
 // Run without OpenDeck (`node src/main.mjs`) to use just the HTTP side + preview.
 
 import http from "node:http";
 import { execFile } from "node:child_process";
 import { AgentStore, displayNames } from "./agents.mjs";
-import { AppWatcher, TERM_APPS, activateApp, appsForDeck } from "./apps.mjs";
-import { ContextReader, moveCursor, tabCursor } from "./context.mjs";
+import { AppWatcher, TERM_APPS, activateApp, appsForDeck, hostApp } from "./apps.mjs";
+import { AppReads, ContextReader, moveCursor, pickCursor } from "./context.mjs";
 import { Controls, SNAPLY_BUNDLE, knobPush, knobTurn } from "./controls.mjs";
 import { PermissionBroker } from "./permissions.mjs";
 import { DeckPower } from "./power.mjs";
-import { CHOICES, appKeySvg, blankKeySvg, blankPanelSvg, keySvg, stripPanels, svgDataUrl } from "./render.mjs";
+import { CHOICES, PULSE, appKeySvg, blankKeySvg, blankPanelSvg, keySvg, stripPanels, svgDataUrl, wantsAttention } from "./render.mjs";
 import { allocate } from "./slots.mjs";
 
 const SLOT = "com.zacharyrubin.agentdeck.slot";
 const STRIP = "com.zacharyrubin.agentdeck.strip";
 const HTTP_PORT = Number(process.env.AGENT_DECK_PORT || 47821);
-const BLINK_MS = 600;
+const PULSE_MS = 500; // one blink frame (render.mjs PULSE): larger, smaller, once a second
 const PRUNE_AFTER_MS = 12 * 60 * 60 * 1000;
 const PREVIEW_SLOTS = 10;
 const BLANK_MS = 1000; // time for black images to reach the deck before it sleeps
 const CONTEXT_REFRESH_MS = 3000; // re-read the app on the strip this often
+const SLOW_READ_MS = 2000; // log reads slower than this
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -85,15 +92,28 @@ const controls = new Controls({
   // Unknown until the app list loads: try the key anyway.
   isRunning: () => !apps.apps.length || apps.apps.some((a) => a.bundleId === SNAPLY_BUNDLE),
   launch: () => execFile("open", ["-g", "-b", SNAPLY_BUNDLE], (err) => err && log("couldn't open Snaply:", err.message)),
+  onChange: () => render(), // the launcher's step shows on the strip
 });
 let ws = null;
-let blinkOn = true;
+let frame = 0; // pulse frame for keys that want attention
+const seenDone = new Map(); // agent id -> stateSince of the finish you saw (pressed its key)
 let featuredShift = 0;
 let focusApp = null; // key of the app whose key was pressed last: the strip shows it
 const appContext = new Map(); // app key -> { summary, items } from context.mjs
 const reader = new ContextReader({ log });
-let reading = false;
-let pick = null; // tab picker cursor: { app, index, title, window } (context.mjs tabCursor)
+const reads = new AppReads({
+  read: (app) => reader.read(app),
+  settled(app, { context, error, ms, again }) {
+    if (error) {
+      log(`context: couldn't read ${app.name}:`, error.message);
+      if (!appContext.has(app.key)) appContext.set(app.key, { summary: "Couldn't read this app", items: [] });
+    } else appContext.set(app.key, context);
+    if (ms > SLOW_READ_MS) log(`context: reading ${app.name} took ${ms} ms`);
+    render();
+    if (again) refreshContext({ soon: true });
+  },
+});
+let pick = null; // picker cursor: { app, index, title, group } (context.mjs pickCursor)
 
 const broker = new PermissionBroker({
   onChange(agentId, request) {
@@ -140,40 +160,38 @@ function stripApp() {
   return apps.get(focusApp) || null;
 }
 
-/** The strip's tab picker, when it shows a tabbed app: { app, tabs, cursor } (cursor kept on the same tab). */
-function stripTabs() {
+/**
+ * The strip's picker, when the app on it lists tabs, conversations, chats or
+ * notes: { app, picks, cursor } (cursor kept on the same entry).
+ */
+function stripPicks() {
   const app = stripApp();
-  const tabs = app && appContext.get(app.key)?.tabs;
-  if (!tabs?.length) return null;
-  pick = { app: app.key, ...tabCursor(pick?.app === app.key ? pick : null, tabs) };
-  return { app, tabs, cursor: pick.index };
+  const picks = app && appContext.get(app.key)?.picks;
+  if (!picks?.length) return null;
+  pick = { app: app.key, ...pickCursor(pick?.app === app.key ? pick : null, picks) };
+  return { app, picks, cursor: pick.index };
 }
 
-/** Knob 1 pushed on the tab picker: switch the app to that tab and bring it forward. */
-async function openTab(app, tab) {
+/** Knob 1 pushed on the picker: open that tab, conversation, chat or note and bring the app forward. */
+async function openPick(app, p) {
   try {
-    const r = await reader.pressTab(app, tab);
-    if (!r.pressed) log(`context: couldn't find tab "${tab.title}" in ${app.name}`);
+    const r = await reader.open(app, p);
+    if (!r.pressed) log(`context: couldn't open "${p.title}" in ${app.name}`);
   } catch (err) {
-    log(`context: couldn't switch tab in ${app.name}:`, err.message);
+    log(`context: couldn't open "${p.title}" in ${app.name}:`, err.message);
   }
   activateApp(app, log);
-  setTimeout(refreshContext, 300);
+  setTimeout(() => refreshContext({ soon: true }), 300);
 }
 
-async function refreshContext() {
+/**
+ * Re-read the app on the strip (AppReads: each app on its own, so switching
+ * app keys never waits behind a slow read of the last app). `soon`: the app
+ * was just pressed or changed, so if it's being read already, read it again.
+ */
+function refreshContext({ soon = false } = {}) {
   const app = stripApp();
-  if (!app || reading || power.asleep) return;
-  reading = true;
-  try {
-    appContext.set(app.key, await reader.read(app));
-  } catch (err) {
-    log(`context: couldn't read ${app.name}:`, err.message);
-    if (!appContext.has(app.key)) appContext.set(app.key, { summary: "Couldn't read this app", items: [] });
-  } finally {
-    reading = false;
-  }
-  render();
+  if (app && !power.asleep) reads.request(app, { soon });
 }
 
 function slotContexts(device) {
@@ -203,19 +221,27 @@ function resolve(id) {
   return {};
 }
 
+/** Whether you've pressed this agent's key since it last finished. */
+const seen = (agent) => agent.state === "done" && seenDone.get(agent.id) === agent.stateSince;
+const pulsing = () => store.ordered().some((a) => wantsAttention(a, seen(a)));
+
 function scene() {
   const agents = store.ordered();
   const nm = names();
   const keyFor = (id, i) => {
     const { agent, app } = resolve(id);
     if (app) return appKeySvg({ app });
-    return keySvg({ agent, name: agent && nm.get(agent.id), slot: i + 1, blinkOn });
+    if (!agent) return keySvg({ slot: i + 1 });
+    const icon = hostApp(apps.apps, agent)?.icon ?? null;
+    return keySvg({ agent, name: nm.get(agent.id), slot: i + 1, icon, frame, seen: seen(agent) });
   };
   const f = featured();
   const app = stripApp();
+  const pending = agents.some((a) => a.request); // a permission question takes the strip over the launcher
   const strip = stripPanels({
     agent: f.agent, name: f.agent && nm.get(f.agent.id), index: f.index, total: f.total, counts: store.counts(),
-    ...(app && { app, context: appContext.get(app.key) ?? null, cursor: stripTabs()?.cursor }),
+    ...(app && { app, context: appContext.get(app.key) ?? null, cursor: stripPicks()?.cursor }),
+    ...(!pending && controls.launcher !== "idle" && { launcher: controls.launcher }),
   });
   return { keyFor, strip, agents, featured: f };
 }
@@ -270,18 +296,21 @@ function onDeckMessage(msg) {
       if (msg.action !== SLOT) break;
       const i = slotContexts(msg.device).indexOf(msg.context);
       const { agent, app } = resolve(layouts.get(msg.device)?.[i]); // what the key shows now
+      log(`deck: key ${i + 1} → ${app ? app.name : agent ? `agent ${names().get(agent.id)} (${agent.state})` : "empty"}`);
+      controls.letGo("another key pushed"); // a dictation key held down mustn't outlast other use of the deck
       if (app) {
         activateApp(app, log);
         focusApp = app.key; // the strip shows this app until an agent takes over
-        pick = null; // tab picker starts on the current tab
+        pick = null; // the picker starts on the current tab or conversation
         render();
-        refreshContext();
+        refreshContext({ soon: true });
         break;
       }
       // Jumping to the agent hands any pending question back to its own dialog.
       if (agent && broker.get(agent.id)) broker.release(agent.id, "user jumped to agent");
       if (agent) {
-        focusApp = null;
+        focusApp = null; // the strip shows this agent instead of an app
+        if (agent.state === "done") seenDone.set(agent.id, agent.stateSince); // its key stops pulsing
         const at = store.byUrgency().findIndex((a) => a.id === agent.id);
         if (at >= 0) featuredShift = at; // and the strip features that agent
         render();
@@ -291,18 +320,18 @@ function onDeckMessage(msg) {
     }
     case "dialRotate": {
       const ticks = msg.payload?.ticks || 0;
-      const tabs = stripTabs();
-      const what = knobTurn(c.column ?? 0, { tabs: !!tabs });
+      const list = stripPicks();
+      const what = knobTurn(c.column ?? 0, { list: !!list, app: !!stripApp(), launcher: controls.launcher !== "idle" });
       if (what === "fields") controls.tab(ticks); // move between fields in the front app
       else if (what === "scroll") controls.scroll(ticks); // wheel where the pointer is
-      else if (what === "pick-tab") {
-        pick = { app: tabs.app.key, ...moveCursor(pick, tabs.tabs, ticks) };
+      else if (what === "launcher") controls.launcherTurn(ticks); // through Spotlight's results
+      else if (what === "pick") {
+        pick = { app: list.app.key, ...moveCursor(pick, list.picks, ticks) };
         render();
-      } else {
-        if (focusApp) focusApp = null; // back to the agents, starting from the featured one
-        else featuredShift += Math.sign(ticks);
+      } else if (what === "agents") {
+        featuredShift += Math.sign(ticks);
         render();
-      }
+      } // "none": an app is on the strip and stays until an agent key is pressed
       break;
     }
     case "dialDown":
@@ -310,10 +339,13 @@ function onDeckMessage(msg) {
       const agent = featured().agent;
       const column = c.column ?? 0;
       // A pending decision owns all four knobs (its choices sit above them).
-      const tabs = stripTabs();
-      const what = knobPush(column, { pending: !!(agent && broker.get(agent.id)), touch: msg.event === "touchTap", tabs: !!tabs });
+      const list = stripPicks();
+      const what = knobPush(column, { pending: !!(agent && broker.get(agent.id)), touch: msg.event === "touchTap", list: !!list });
+      log(`deck: knob ${column + 1} ${msg.event === "touchTap" ? "tap" : "push"} → ${what}`);
+      if (what !== "dictate" && what !== "launch") controls.letGo("another knob pushed"); // the launcher stops its own
       if (what === "choose") chooseFromDeck(agent, column);
-      else if (what === "open-tab") openTab(tabs.app, tabs.tabs[tabs.cursor]);
+      else if (what === "launch") controls.launcherPush();
+      else if (what === "open") openPick(list.app, list.picks[list.cursor]);
       else if (what === "dictate") controls.dictate();
       else if (what === "click") controls.click();
       else if (stripApp()) activateApp(stripApp(), log); // jump to what the strip shows
@@ -463,7 +495,7 @@ const server = http.createServer(async (req, res) => {
       });
     } else if (req.method === "GET" && url.pathname === "/context") {
       const app = stripApp();
-      sendJson(res, 200, { focus: focusApp, showing: app?.key ?? null, cursor: stripTabs()?.cursor ?? null, context: app ? appContext.get(app.key) ?? null : null });
+      sendJson(res, 200, { focus: focusApp, showing: app?.key ?? null, cursor: stripPicks()?.cursor ?? null, context: app ? appContext.get(app.key) ?? null : null });
     } else if (req.method === "GET" && url.pathname === "/health") {
       sendJson(res, 200, { ok: true, deck: ws?.readyState === WebSocket.OPEN, contexts: contexts.size, decks: [...decks], displaysAsleep: power.asleep });
     } else {
@@ -480,18 +512,22 @@ server.listen(HTTP_PORT, "127.0.0.1", () => log(`listening for agent events on h
 
 // ---------------------------------------------------------------- timers
 
+// Step the pulse while any key wants attention; settle on the first frame after.
 setInterval(() => {
-  const anyWaiting = store.counts().waiting > 0;
-  if (anyWaiting || !blinkOn) {
-    blinkOn = anyWaiting ? !blinkOn : true;
+  const on = pulsing();
+  if (on || frame) {
+    frame = on ? (frame + 1) % PULSE.length : 0;
     render();
   }
-}, BLINK_MS);
+}, PULSE_MS);
 
-setInterval(() => store.prune(PRUNE_AFTER_MS) && render(), 60_000);
+setInterval(() => {
+  for (const id of seenDone.keys()) if (!store.agents.has(id)) seenDone.delete(id);
+  if (store.prune(PRUNE_AFTER_MS)) render();
+}, 60_000);
 
 // Keep the app on the strip current (tabs opened, messages arriving).
-setInterval(refreshContext, CONTEXT_REFRESH_MS);
+setInterval(() => refreshContext(), CONTEXT_REFRESH_MS);
 
 // Running apps fill the keys agents don't need; lsappinfo pushes launch/quit/front changes.
 apps.start();

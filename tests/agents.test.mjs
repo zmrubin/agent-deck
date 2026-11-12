@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AgentStore, interpret, displayNames } from "../plugin/com.zacharyrubin.agentdeck.sdPlugin/src/agents.mjs";
-import { keySvg, stripPanels, wrap, wrapPx, textWidth } from "../plugin/com.zacharyrubin.agentdeck.sdPlugin/src/render.mjs";
+import { keySvg, stripPanels, wantsAttention, wrap, wrapPx, textWidth } from "../plugin/com.zacharyrubin.agentdeck.sdPlugin/src/render.mjs";
 
 const hook = (name, extra = {}) => ({ session_id: "s1", cwd: "/x/my-project", hook_event_name: name, ...extra });
 
@@ -66,11 +66,44 @@ test("wrap breaks words and adds an ellipsis on overflow", () => {
   assert.deepEqual(wrap("abcdefghijkl", 5, 3), ["abcde", "fghij", "kl"]);
 });
 
-test("rendering: keys blink only when waiting; strip is four slices of one scene", () => {
+test("agent keys show the app's icon, blinking larger and smaller while waiting, or done and not yet seen", () => {
+  const icon = "data:image/png;base64,iVBORw0KGgo=";
+  const key = (state, opts = {}) => [0, 1].map((frame) => keySvg({ agent: { state }, name: "api", slot: 1, icon, frame, ...opts }));
+  const frames = (svgs) => new Set(svgs).size;
+  const size = (svg) => Number(/<image [^>]*width="(\d+)"/.exec(svg)[1]);
+
+  for (const svg of key("working")) assert.match(svg, /<image [^>]*xlink:href="data:image\/png;base64,iVBORw0KGgo="/);
+  assert.equal(frames(key("working")), 1, "working: steady");
+  assert.equal(frames(key("idle")), 1, "idle: steady");
+
+  const done = key("done");
+  assert.deepEqual(done.map(size), [80, 56], "done: the icon blinks larger and smaller");
+  assert.match(done[1], /<image x="44" y="24"/, "shrinking about its center");
+  assert.equal(frames(key("done", { seen: true })), 1, "done and seen: steady");
+  assert.deepEqual(key("waiting", { seen: true }).map(size), [80, 56], "waiting blinks even once seen");
+  assert.match(key("waiting")[0], /fill="#fbbf24"[^>]*>api</, "waiting: amber name");
+
+  for (const svg of [...done, ...key("working"), keySvg({ slot: 3 })]) {
+    assert.match(svg, /<rect width="144" height="144" fill="#000000"\/>/, "true black background");
+    assert.doesNotMatch(svg, /Gradient|#3b82f6|#166534|opacity/, "no glow, dot or green");
+  }
+
+  const plain = keySvg({ agent: { state: "done" }, name: "web", slot: 2, icon: null });
+  assert.doesNotMatch(plain, /<image/);
+  assert.match(plain, />W<\/text>/, "no app icon: a letter tile");
+  assert.match(keySvg({ slot: 3 }), />3<\/text>/, "empty key shows its number");
+});
+
+test("wantsAttention: waiting always, done until seen", () => {
+  assert.equal(wantsAttention({ state: "waiting" }, true), true);
+  assert.equal(wantsAttention({ state: "done" }), true);
+  assert.equal(wantsAttention({ state: "done" }, true), false);
+  assert.equal(wantsAttention({ state: "working" }), false);
+  assert.equal(wantsAttention(null), false);
+});
+
+test("rendering: strip is four slices of one scene", () => {
   const waiting = { state: "waiting", message: "Approve <deploy> & push?" };
-  assert.notEqual(keySvg({ agent: waiting, name: "api", slot: 1, blinkOn: true }), keySvg({ agent: waiting, name: "api", slot: 1, blinkOn: false }));
-  const working = { state: "working" };
-  assert.equal(keySvg({ agent: working, name: "api", slot: 1, blinkOn: true }), keySvg({ agent: working, name: "api", slot: 1, blinkOn: false }));
   const panels = stripPanels({ agent: waiting, name: "api", index: 0, total: 1, counts: { waiting: 1 } });
   assert.equal(panels.length, 4);
   panels.forEach((p, i) => {

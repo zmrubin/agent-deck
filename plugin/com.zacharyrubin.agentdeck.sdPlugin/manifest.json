@@ -35,8 +35,8 @@
         "Icon": "imgs/strip",
         "layout": "layouts/strip.json",
         "TriggerDescription": {
-          "Rotate": "Cycle featured agent (1st knob picks a tab when the strip lists tabs; 3rd scrolls; 4th moves between fields)",
-          "Push": "Answer the permission shown above this knob; otherwise jump to what the strip shows (1st knob opens the picked tab; 3rd dictates; 4th clicks)",
+          "Rotate": "Cycle featured agent (1st knob moves through Spotlight results while the launcher is open; 2nd picks a tab, conversation, chat or note when the strip lists them; 3rd scrolls; 4th moves between fields)",
+          "Push": "Answer the permission shown above this knob; otherwise: 1st opens Spotlight and dictates, stops, then opens the pick; 2nd opens the picked tab, conversation, chat or note (or jumps to what the strip shows); 3rd dictates; 4th clicks",
           "Touch": "Answer the permission shown above this spot, or jump to featured agent"
         }
       },

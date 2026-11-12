@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  AppWatcher, appsForDeck, openArgs, parseAppList, parseNotification, rankApps, windowedPids,
+  AppWatcher, appsForDeck, hostApp, openArgs, parseAppList, parseNotification, rankApps, windowedPids,
 } from "../plugin/com.zacharyrubin.agentdeck.sdPlugin/src/apps.mjs";
 import { appKeySvg, textWidth } from "../plugin/com.zacharyrubin.agentdeck.sdPlugin/src/render.mjs";
 
@@ -110,6 +110,18 @@ test("AppWatcher re-ranks on front-app events and ignores background processes",
   assert.equal(refreshes, 2);
   w.publish();
   assert.equal(changes.length, n, "no change event when nothing changed");
+});
+
+test("hostApp finds the app an agent runs in: its bundle id, else its terminal", () => {
+  const list = [
+    { key: "claude", name: "Claude", bundleId: "com.anthropic.claudefordesktop" },
+    { key: "term", name: "Terminal", bundleId: "com.apple.Terminal" },
+  ];
+  assert.equal(hostApp(list, { bundleId: "com.anthropic.claudefordesktop" })?.key, "claude");
+  assert.equal(hostApp(list, { termProgram: "Apple_Terminal" })?.key, "term");
+  assert.equal(hostApp(list, { bundleId: "com.example.gone", termProgram: "Apple_Terminal" }), null, "the bundle id wins");
+  assert.equal(hostApp(list, { termProgram: "unknown" }), null);
+  assert.equal(hostApp(list, null), null);
 });
 
 test("app keys show the icon and name, with a letter tile when there is no icon", () => {
